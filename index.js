@@ -5,21 +5,34 @@ import { generators } from 'openid-client'
 import jsonwebtoken from 'jsonwebtoken'
 import WebSocket, { WebSocketServer } from 'ws'
 
-// jwt-idp key
-const privateKey = process.env['privateKey'].replaceAll('\\n', '\n')
+// Qlik Cloud configuration
+const qlikConfig = {
+  tenantUri: process.env['tenantUri'], // Your Qlik Cloud tenant hostname like 'jwt-proxy.us.qlikcloud.com'
+  privateKey: process.env['privateKey'].replaceAll('\\n', '\n'), 
+  keyId: process.env['keyId'],
+  issuer: process.env['issuer']
+};
 
-// idp config
+// Your web application's identity provider configuration
+// This example uses Auth0 as the identity provider to authenticate users to the
+// front end application. Your solution may use a different identity provider
+// to authenticate users or you may add this code to a solution where users
+// have an existing authenticated session to your web application.
 const clientId = process.env['clientId']
 const clientSecret = process.env['clientSecret']
 const redirectUri = process.env['redirectUri']
 const idpAuthorizeUri = `${process.env['idpUri']}/authorize`;
 const idpTokenUri = `${process.env['idpUri']}/oauth/token`;
-// qcs tenant
-const tenantUri = process.env['tenantUri']
+const idpScope = 'openid email profile';
 
-// local storage
+// This is a local storage object for mapping Qlik Cloud session cookies with
+// the user's identity provider token. The key for each object in the array is
+// the sessionId used to proxy requests from the front-end to this backend proxy.
 const tokenStore = {}
 
+// This example uses express.js to provide the proxy services between the
+// frontend web application and Qlik Cloud REST endpoints and websocket
+// connections to the engine.
 const app = express()
 app.use(compression({ threshold: 0 }))
 
@@ -27,32 +40,35 @@ app.get('/', (req, res) => {
   res.end('backend')
 })
 
+// This endpoint is necessary for this example to authenticate a user.
+// You may authenticate users in a different way and that is ok.
 app.get('/login', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex')
   const codeVerifier = generators.codeVerifier(43)
   const codeChallenge = generators.codeChallenge(codeVerifier)
 
   tokenStore[state] = { codeVerifier }
-
   res.redirect(
     `${idpAuthorizeUri}?response_type=code&prompt=none&client_id=${clientId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=${idpScope}&state=${state}`
   )
   res.end()
 })
 
+// This endpoint is necessary for this example to authenticate a user
+// if they went to the callback url direcly. If the user is authenticated,
+// contact the token endpoint to obtain the id_token from the IdP.
+// With the id_token, authorize the user to Qlik Cloud performing JWT auth.
+// Register a session with the tokenstore so the application can proxy requests
+// to Qlik Cloud as the correct user from the frontend through the backend.
+// Redirect to the front end application to give it a session id and render
+// content to the browser.
 app.get('/login/callback', async (req, res) => {
-  const { code, error, state } = req.query
+  const { code, error, state } = req.query;
+  //If the user is not authenticated to this example, do the dance.
   if (error === 'login_required' || error === 'interaction_required') {
-    const state2 = crypto.randomBytes(16).toString('hex')
-    const codeVerifier = generators.codeVerifier(43)
-    const codeChallenge = generators.codeChallenge(codeVerifier)
-
-    tokenStore[state2] = { codeVerifier }
-    res.redirect(
-      `${idpAuthorizeUri}?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=${idpScope}&state=${state2}`
-    )
-    res.end()
-    return
+    res.redirect(401, "/login");
+    res.end();
+    return;
   }
 
   if (!tokenStore[state]) {
