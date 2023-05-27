@@ -20,7 +20,7 @@ const qlikConfig = {
 // have an existing authenticated session to your web application.
 const clientId = process.env['clientId']
 const clientSecret = process.env['clientSecret']
-const redirectUri = 'https://jwt-proxy-backend.qlik.repl.co/login/callback'//process.env['redirectUri']
+const redirectUri = process.env['redirectUri']
 const idpAuthorizeUri = `${process.env['idpUri']}/authorize`;
 const idpTokenUri = `${process.env['idpUri']}/oauth/token`;
 const idpScope = 'openid email profile';
@@ -29,6 +29,9 @@ const idpScope = 'openid email profile';
 // the user's identity provider token. The key for each object in the array is
 // the sessionId used to proxy requests from the front-end to this backend proxy.
 const tokenStore = {}
+
+// This is the frontend application uri used for responding to requests.
+const frontendUri = "https://jwt-proxy-frontend.qlik.repl.co";
 
 // This example uses express.js to provide the proxy services between the
 // frontend web application and Qlik Cloud REST endpoints and websocket
@@ -63,8 +66,7 @@ app.get('/login', (req, res) => {
 // Redirect to the front end application to give it a session id and render
 // content to the browser.
 app.get('/login/callback', async (req, res) => {
-  const { code, error, state } = req.query;
-  //If the user is not authenticated to this example, do the dance.
+const { code, error, state } = req.query
   if (error === 'login_required' || error === 'interaction_required') {
     const state2 = crypto.randomBytes(16).toString('hex')
     const codeVerifier = generators.codeVerifier(43)
@@ -74,14 +76,16 @@ app.get('/login/callback', async (req, res) => {
     res.redirect(
       `${idpAuthorizeUri}?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=${idpScope}&state=${state2}`
     )
-    res.end();
-    return;
+    res.end()
+    return
   }
 
-  if (!tokenStore[state2]) {
+
+  if (!tokenStore[state]) {
     console.log('state does not exist')
     res.status(401).end()
   }
+
 
   // If the user is authenticated, fetch the id_token from the web application
   // identity provider, map attributes to authenticate to Qlik Cloud and get a
@@ -94,7 +98,7 @@ app.get('/login/callback', async (req, res) => {
     },
     body: JSON.stringify({
       code,
-      code_verifier: tokenStore[state2].codeVerifier,
+      code_verifier: tokenStore[state].codeVerifier,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
       client_id: clientId,
@@ -107,17 +111,16 @@ app.get('/login/callback', async (req, res) => {
 
     // To obtain a qlik session cookie, the user's email, name, and subject
     // from the authenticated web application must be provided to Qlik.
-    const qlikJwt = await createToken(idToken.email, idToken.name, idToken.sub);
+    const qlikJwt = await createToken(idToken.email, idToken.name, idToken.sub, qlikConfig);
     const qlikSession = await getQlikSessionCookie(qlikConfig.tenantUri, qlikJwt);
 
     // Create a unique identifier for the session so that the frontend and
     // backend can communicate and requests to Qlik proxy correctly.
     const frontendSession = crypto.randomBytes(16).toString('hex');
-    console.log(frontendSession);
     tokenStore[frontendSession] = { idpToken, qlikSession };
 
     //redirect to your web application providing it with the sessionId.
-    res.redirect(`https://jwt-proxy-frontend.qlik.repl.co/?sessionId=${frontendSession}&name=${idToken.name}`)
+    res.redirect(`${frontendUri}/?sessionId=${frontendSession}&name=${idToken.name}`)
   } else {
     console.log(await idpTokenRes.text())
   }
@@ -199,15 +202,15 @@ wss.on('connection', async function connection(ws, req) {
   const cookie = tokenStore[sessionId]?.qlikSession
 
   const csrfToken = cookie.match('_csrfToken=(.*);')[1]
-  const qlikClinetWebSocket = new WebSocket(`wss://${qlikConfig.tenantUri}/app/${appId}/identity/preview?qlik-csrf-token=${csrfToken}`, {
+  const qlikWebSocket = new WebSocket(`wss://${qlikConfig.tenantUri}/app/${appId}/identity/preview?qlik-csrf-token=${csrfToken}`, {
     headers: {
       cookie,
     },
   })
 
-  qlikClinetWebSocket.on('error', console.error)
+  qlikWebSocket.on('error', console.error)
   const openPromise = new Promise((resolve) => {
-    qlikClinetWebSocket.on('open', function open() {
+    qlikWebSocket.on('open', function open() {
       resolve()
     })
   })
@@ -217,16 +220,16 @@ wss.on('connection', async function connection(ws, req) {
       await openPromise
       isOpened = true
     }
-    qlikClinetWebSocket.send(data.toString())
+    qlikWebSocket.send(data.toString())
   })
 
-  qlikClinetWebSocket.on('message', function message(data) {
+  qlikWebSocket.on('message', function message(data) {
     ws.send(data.toString())
   })
 })
 
 function setCors(res) {
-  res.set('Access-Control-Allow-Origin', 'https://frontend5wirelessopengl--hvm.repl.co')
+  res.set('Access-Control-Allow-Origin', frontendUri)
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
   res.set('Access-Control-Allow-Headers', 'Content-Type, x-proxy-session-id')
   res.set('Access-Control-Allow-Credentials', 'true')
