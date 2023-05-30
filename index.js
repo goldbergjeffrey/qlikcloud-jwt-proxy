@@ -4,11 +4,14 @@ import compression from 'compression'
 import { generators } from 'openid-client'
 import jsonwebtoken from 'jsonwebtoken'
 import WebSocket, { WebSocketServer } from 'ws'
+import { join } from 'path'
+
+const __dirname = new URL('.', import.meta.url).pathname
 
 // Qlik Cloud configuration
 const qlikConfig = {
   tenantUri: process.env['tenantUri'], // Your Qlik Cloud tenant hostname like 'jwt-proxy.us.qlikcloud.com'
-  privateKey: process.env['privateKey'].replaceAll('\\n', '\n'), 
+  privateKey: process.env['privateKey'].replaceAll('\\n', '\n'),
   keyId: process.env['keyId'],
   issuer: process.env['issuer']
 };
@@ -31,7 +34,7 @@ const idpScope = 'openid email profile';
 const tokenStore = {}
 
 // This is the frontend application uri used for responding to requests.
-const frontendUri = "https://jwt-proxy-frontend.qlik.repl.co";
+const frontendUri = "https://jwt-proxy-combined.qlik.repl.co";
 
 // This example uses express.js to provide the proxy services between the
 // frontend web application and Qlik Cloud REST endpoints and websocket
@@ -40,7 +43,11 @@ const app = express()
 app.use(compression({ threshold: 0 }))
 
 app.get('/', (req, res) => {
-  res.end('backend')
+  res.sendFile(join(__dirname, 'index.html'))
+})
+
+app.get('/sw.js', (req, res) => {
+  res.sendFile(join(__dirname, 'sw.js'))
 })
 
 // This endpoint is necessary for this example to authenticate a user.
@@ -66,7 +73,7 @@ app.get('/login', (req, res) => {
 // Redirect to the front end application to give it a session id and render
 // content to the browser.
 app.get('/login/callback', async (req, res) => {
-const { code, error, state } = req.query
+  const { code, error, state } = req.query
   if (error === 'login_required' || error === 'interaction_required') {
     const state2 = crypto.randomBytes(16).toString('hex')
     const codeVerifier = generators.codeVerifier(43)
@@ -133,12 +140,39 @@ const { code, error, state } = req.query
 app.get('/single/*', async (req, res) => {
   const path = req.originalUrl
   const reqHeaders = {}
-  
+  const webId = "3nGykdFRwOGYQgShM3tZ87yQCbJQ6j0s";
   // if the request has a valid sessionId, retrieve the Qlik session cookie
   // and forward the response to Qlik Cloud.
+
+  //hatem
+  if (req.url.match('sessionId=(.*)')) {
+    console.log(req.url)
+    const sessionId = req.url.match('sessionId=(.*)')[1]
+    if (sessionId && tokenStore[sessionId]?.qlikSession) {
+      console.log(sessionId)
+      reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
+      reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
+      const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1]
+      const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${webId}`, {
+        headers: reqHeaders,
+      })
+      setCors(res)
+      res.set('content-type', 'text/html; charset=UTF-8')
+      res.status(r.status)
+      const buffer = Buffer.from(await r.arrayBuffer())
+      res.end(buffer, 'binary')
+    } else {
+      setCors(res)
+      res.end('no sessionId hatem')
+    }
+  }
+  return
+
   if (req.headers['x-proxy-session-id']) {
     reqHeaders.cookie = tokenStore[req.headers['x-proxy-session-id']]?.qlikSession
-    const r = await fetch(`https://${qlikConfig.tenantUri}${path}`, {
+    reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
+    const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1]
+    const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${webId}`, {
       headers: reqHeaders,
     })
     setCors(res)
@@ -235,8 +269,7 @@ function setCors(res) {
   res.set('Access-Control-Allow-Credentials', 'true')
 }
 
-async function createToken(email, name, sub, config)
-{
+async function createToken(email, name, sub, config) {
   const signingOptions = {
     keyid: config.keyId,
     algorithm: 'RS256',
@@ -260,8 +293,6 @@ async function createToken(email, name, sub, config)
 }
 
 async function getQlikSessionCookie(tenantUri, token) {
-
-
   const resp = await fetch(`https://${tenantUri}/login/jwt-session`, {
     method: 'POST',
     headers: {
