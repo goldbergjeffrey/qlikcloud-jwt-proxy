@@ -214,18 +214,10 @@ const wss = new WebSocketServer({ server })
 
 wss.on('connection', async function connection(ws, req) {
   let isOpened = false
-  console.log('hatem <<<<<')
-  console.log(req.url)
-  console.log('hatem <<<<<')
-  let sessionId
-  if (req.url.match('sessionId%3D(.*)')) {
-    sessionId = req.url.match('sessionId%3D(.*)')[1]
-  } else if (req.url.match('sessionId=(.*)')) {
-    sessionId = req.url.match('sessionId=(.*)')[1]
-  }
+  const url = decodeURIComponent(req.url)
+  const sessionId = url.match('sessionId=([0-9a-z]+)')[1]
   const appId = req.url.match('/app/(.*)\\?')[1]
   const cookie = tokenStore[sessionId]?.qlikSession
-
   const csrfToken = cookie.match('_csrfToken=(.*);')[1]
   const qlikWebSocket = new WebSocket(`wss://${qlikConfig.tenantUri}/app/${appId}/identity/preview?qlik-csrf-token=${csrfToken}`, {
     headers: {

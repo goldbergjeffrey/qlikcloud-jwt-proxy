@@ -41,17 +41,10 @@
                             window.WebSocket.prototype=ws.prototype;
 
                             window.history.pushState(null, null, '/')
-                            //renderSheet(config)
-                            
+                            renderSheet(config)
                             renderIframe()
                         })
                     })
-//                    .then(registration => {
-//                        navigator.serviceWorker.ready.then(registration => {
-//                          registration.active.postMessage({type:'single', sessionId})
-//                            renderIframe()
-//                        })
-//                    })
                     .catch(error => {
                         console.error(`Registration failed with ${error}`)
                     })
