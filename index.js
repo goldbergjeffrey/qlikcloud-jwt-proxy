@@ -143,14 +143,12 @@ app.get('/single/*', async (req, res) => {
   const webId = "3nGykdFRwOGYQgShM3tZ87yQCbJQ6j0s";
   // if the request has a valid sessionId, retrieve the Qlik session cookie
   // and forward the response to Qlik Cloud.
-
+console.log(path);
   //hatem
   if (req.url.match('sessionId=(.*)')) {
     console.log(req.url)
     const sessionId = req.url.match('sessionId=(.*)')[1]
     if (sessionId && tokenStore[sessionId]?.qlikSession) {
-      console.log(sessionId)
-      reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
       reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
       const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1]
       const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${webId}`, {
@@ -163,26 +161,11 @@ app.get('/single/*', async (req, res) => {
       res.end(buffer, 'binary')
     } else {
       setCors(res)
-      res.end('no sessionId hatem')
+      res.end('no sessionId')
     }
   }
-  return
 
-  if (req.headers['x-proxy-session-id']) {
-    reqHeaders.cookie = tokenStore[req.headers['x-proxy-session-id']]?.qlikSession
-    reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
-    const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1]
-    const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${webId}`, {
-      headers: reqHeaders,
-    })
-    setCors(res)
-    res.status(r.status)
-    const buffer = Buffer.from(await r.arrayBuffer())
-    res.end(buffer, 'binary')
-  } else {
-    setCors(res)
-    res.end('no sessionId')
-  }
+  res.end("No sessionId sent in query params");
 
 })
 
@@ -231,7 +214,15 @@ const wss = new WebSocketServer({ server })
 
 wss.on('connection', async function connection(ws, req) {
   let isOpened = false
-  const sessionId = req.url.match('sessionId=(.*)')[1]
+  console.log('hatem <<<<<')
+  console.log(req.url)
+  console.log('hatem <<<<<')
+  let sessionId
+  if (req.url.match('sessionId%3D(.*)')) {
+    sessionId = req.url.match('sessionId%3D(.*)')[1]
+  } else if (req.url.match('sessionId=(.*)')) {
+    sessionId = req.url.match('sessionId=(.*)')[1]
+  }
   const appId = req.url.match('/app/(.*)\\?')[1]
   const cookie = tokenStore[sessionId]?.qlikSession
 

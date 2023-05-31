@@ -21,25 +21,6 @@ self.addEventListener('fetch', function(event) {
       })()
     )
   }
-  if (
-    sessionId !== null &&
-    e?.data?.type === 'single'
-  ) {
-    event.respondWith(
-      (async () => {
-        console.log('fetch', event.request.url)
-        console.log(sessionId)
-        const newHeaders = new Headers(event.request.headers)
-        newHeaders.set('x-proxy-session-id', sessionId)
-        newHeaders.set('sec-fetch-mode', 'cors')
-        const newRequest = new Request(event.request, {
-          headers: newHeaders,
-          mode: 'cors',
-        })
-        return fetch(newRequest)
-      })()
-    )
-  }
 })
 
 self.addEventListener('install', function(e) {
