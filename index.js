@@ -186,7 +186,7 @@ app.get('/api/v1/*', async (req, res) => {
   res.end(buffer, 'binary')
 })
 
-// fetch resourse from qlik using a redirect instead of proxy
+// fetch resource from qlik using a redirect instead of proxy
 // This endpoint is necessary when your web application uses the capability API.
 app.get('/resources/*', async (req, res) => {
   setCors(res)

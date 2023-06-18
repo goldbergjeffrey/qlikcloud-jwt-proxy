@@ -42,7 +42,7 @@
 
                             window.history.pushState(null, null, '/')
                             renderSheet(config)
-                            renderIframe()
+                            renderIframe(config)
                         })
                     })
                     .catch(error => {
@@ -102,10 +102,14 @@
                 })
         }
 
-        function renderIframe() {
+        function renderIframe(config) {
           //embed chart using single API iframe
+          const qlikConfig = {
+              appId: "e1024b45-efa3-421f-b0c0-44d7d1222c7d",
+              sheetId: "05743d07-2e17-4c5b-8f81-625c4ee0931b"
+            }
           console.log("begin render iframe")
-          let iframeSrc = `https://jwt-proxy-combined.qlik.repl.co/single/?appid=e1024b45-efa3-421f-b0c0-44d7d1222c7d&sheet=05743d07-2e17-4c5b-8f81-625c4ee0931b&theme=breeze&opt=ctxmenu,currsel&sessionId=${sessionId}`;
+          let iframeSrc = `https://${config.host}/single/?appid=${qlikConfig.appId}&sheet=${qlikConfig.sheetId}&theme=breeze&opt=ctxmenu,currsel&sessionId=${sessionId}`;
   
           let iframe = document.createElement("iframe");
           iframe.src = iframeSrc;
