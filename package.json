@@ -23,6 +23,7 @@
     "jsonwebtoken": "^9.0.0",
     "node-fetch": "^3.2.6",
     "openid-client": "^5.4.2",
+    "redis": "^4.6.7",
     "ws": "^8.13.0"
   }
 }
