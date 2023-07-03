@@ -1,14 +1,24 @@
-import crypto from 'crypto'
-import express from 'express'
-import compression from 'compression'
-import { generators } from 'openid-client'
-import jsonwebtoken from 'jsonwebtoken'
-import WebSocket, { WebSocketServer } from 'ws'
-import { join } from 'path'
+import crypto from 'crypto';
+import express from 'express';
+import session from 'express-session';
+import * as cookieParser from 'cookie-parser';
+import * as cookie from 'cookie';
+import RedisStore from 'connect-redis';
+import {createClient} from 'redis';
+import compression from 'compression';
+import { generators } from 'openid-client';
+import jsonwebtoken from 'jsonwebtoken';
+import WebSocket, { WebSocketServer } from 'ws';
+import { join } from 'path';
 
-const __dirname = new URL('.', import.meta.url).pathname
+const __dirname = new URL('.', import.meta.url).pathname;
 
-// Qlik Cloud configuration
+// Using JWT to authorize users to Qlik Cloud tenants requires a
+// an active JWT identity provider configuration and certificates
+// to sign and validate JWT tokens sent from this proxy code to
+// your Qlik Cloud tenant.
+// Review https://qlik.dev/authenticate/jwt/create-signed-tokens-for-jwt-authorization
+// for JWT IdP configuration tutorials.
 const qlikConfig = {
   tenantUri: process.env['tenantUri'], // Your Qlik Cloud tenant hostname like 'jwt-proxy.us.qlikcloud.com'
   privateKey: process.env['privateKey'].replaceAll('\\n', '\n'),
@@ -16,11 +26,16 @@ const qlikConfig = {
   issuer: process.env['issuer']
 };
 
-// Your web application's identity provider configuration
+// If you are embedding an iframe or using the capability API, you will need to
+// create a web-integration-id in Qlik Cloud and add your web application to the
+//allow list.
+const qlikWebId = process.env['webIntegrationId'];
+
+// This example contains an identity provider connection to approximate
+// authenticating to a portal or web application. It is part of this example
+// for demonstration purposes only.
 // This example uses Auth0 as the identity provider to authenticate users to the
-// front end application. Your solution may use a different identity provider
-// to authenticate users or you may add this code to a solution where users
-// have an existing authenticated session to your web application.
+// front end application.
 const clientId = process.env['clientId']
 const clientSecret = process.env['clientSecret']
 const redirectUri = process.env['redirectUri']
@@ -28,19 +43,53 @@ const idpAuthorizeUri = `${process.env['idpUri']}/authorize`;
 const idpTokenUri = `${process.env['idpUri']}/oauth/token`;
 const idpScope = 'openid email profile';
 
-// This is a local storage object for mapping Qlik Cloud session cookies with
-// the user's identity provider token. The key for each object in the array is
-// the sessionId used to proxy requests from the front-end to this backend proxy.
-const tokenStore = {}
+// This is a local storage object for mapping the state during the authentication
+// steps in this example.
+const tokenStore = {};
 
 // This is the frontend application uri used for responding to requests.
-const frontendUri = "https://jwt-proxy-combined.qlik.repl.co";
+const frontendUri = "https://qlikcloud-jwt-proxy.qlik.repl.co";
+
+// This example uses express-session and redis to manage and 
+// store sessions for this proxy. In this example, redis stores
+// the ID token from the identity provider and the Qlik Cloud
+// session cookie used when proxying requests from this web
+// application to Qlik Cloud.
+const sessionSecret = process.env['sessionSecret'];
+const redis_db = process.env['redis_db'];
+const redis_port = Number(process.env['redis_port']);
+const redis_pwd = process.env['redis_pwd'];
+
+const client = createClient({
+    password: redis_pwd,
+    socket: {
+        host: redis_db,
+        port: redis_port
+    }
+});
+
+await client.connect();
 
 // This example uses express.js to provide the proxy services between the
 // frontend web application and Qlik Cloud REST endpoints and websocket
 // connections to the engine.
-const app = express()
-app.use(compression({ threshold: 0 }))
+const app = express();
+app.use(compression({ threshold: 0 }));
+
+const store = new RedisStore({ client: client });
+
+app.use(session({
+  store: store,
+  secret: sessionSecret,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    sameSite: true,
+    secure: false,
+    httpOnly: false,
+    maxAge: 1000 * 60 * 10 // 10 minutes
+  }
+}));
 
 app.get('/', (req, res) => {
   res.sendFile(join(__dirname, 'index.html'))
@@ -73,6 +122,7 @@ app.get('/login', (req, res) => {
 // Redirect to the front end application to give it a session id and render
 // content to the browser.
 app.get('/login/callback', async (req, res) => {
+  const session = req.session;
   const { code, error, state } = req.query
   if (error === 'login_required' || error === 'interaction_required') {
     const state2 = crypto.randomBytes(16).toString('hex')
@@ -86,13 +136,11 @@ app.get('/login/callback', async (req, res) => {
     res.end()
     return
   }
-
-
+  
   if (!tokenStore[state]) {
     console.log('state does not exist')
     res.status(401).end()
   }
-
 
   // If the user is authenticated, fetch the id_token from the web application
   // identity provider, map attributes to authenticate to Qlik Cloud and get a
@@ -111,99 +159,94 @@ app.get('/login/callback', async (req, res) => {
       client_id: clientId,
       client_secret: clientSecret,
     }),
-  })
+  });
   if (idpTokenRes.status === 200) {
-    const idpToken = await idpTokenRes.json()
-    const idToken = jsonwebtoken.decode(idpToken.id_token)
+    const idpToken = await idpTokenRes.json();
+    const idToken = jsonwebtoken.decode(idpToken.id_token);
 
     // To obtain a qlik session cookie, the user's email, name, and subject
     // from the authenticated web application must be provided to Qlik.
     const qlikJwt = await createToken(idToken.email, idToken.name, idToken.sub, qlikConfig);
     const qlikSession = await getQlikSessionCookie(qlikConfig.tenantUri, qlikJwt);
 
-    // Create a unique identifier for the session so that the frontend and
-    // backend can communicate and requests to Qlik proxy correctly.
-    const frontendSession = crypto.randomBytes(16).toString('hex');
-    tokenStore[frontendSession] = { idpToken, qlikSession };
-
+    // Add the idToken and the Qlik Cloud cookie to the current session.
+    // Encoding the strings ensures that when decoded no characters are changed,
+    // therefore, reducing the chance of very hard to find errors.
+    session.idToken = encodeURIComponent(idToken);
+    session.qlikSession = encodeURIComponent(qlikSession);
+    
     //redirect to your web application providing it with the sessionId.
-    res.redirect(`${frontendUri}/?sessionId=${frontendSession}&name=${idToken.name}`)
+    res.redirect(`${frontendUri}`);
   } else {
-    console.log(await idpTokenRes.text())
+    console.log(await idpTokenRes.text());
   }
 
-  res.end()
+  res.end();
 })
 
 // Intercepts a request to the Single API (used for iframe embedding) and
 // proxies the request to Qlik Cloud.
 app.get('/single/*', async (req, res) => {
-  const path = req.originalUrl
-  const reqHeaders = {}
-  const webId = "3nGykdFRwOGYQgShM3tZ87yQCbJQ6j0s";
-  // if the request has a valid sessionId, retrieve the Qlik session cookie
-  // and forward the response to Qlik Cloud.
-console.log(path);
-  //hatem
-  if (req.url.match('sessionId=(.*)')) {
-    console.log(req.url)
-    const sessionId = req.url.match('sessionId=(.*)')[1]
-    if (sessionId && tokenStore[sessionId]?.qlikSession) {
-      reqHeaders.cookie = tokenStore[sessionId]?.qlikSession
-      const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1]
-      const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${webId}`, {
-        headers: reqHeaders,
-      })
-      setCors(res)
-      res.set('content-type', 'text/html; charset=UTF-8')
-      res.status(r.status)
-      const buffer = Buffer.from(await r.arrayBuffer())
-      res.end(buffer, 'binary')
-    } else {
-      setCors(res)
-      res.end('no sessionId')
-    }
+  const session = req.session;
+  const path = req.originalUrl;
+  const reqHeaders = {};
+  if (session.id && session.qlikSession) {
+    reqHeaders.cookie = decodeURIComponent(session.qlikSession);
+    const csrfToken = reqHeaders.cookie.match('_csrfToken=(.*);')[1];
+    const r = await fetch(`https://${qlikConfig.tenantUri}${path}&qlik-csrf-token=${csrfToken}&qlik-web-integration-id=${qlikWebId}`, {
+      headers: reqHeaders,
+    });
+    setCors(res);
+    res.set('content-type', 'text/html; charset=UTF-8');
+    res.status(r.status);
+    const buffer = Buffer.from(await r.arrayBuffer());
+    res.end(buffer, 'binary');
+  } else {
+    setCors(res);
+    res.end('no sessionId');
   }
 
-  res.end("No sessionId sent in query params");
+  res.end("No sessionId or qlik session cookie");
 
-})
+});
 
 // Intercepts a request to one of Qlik's REST APIs and proxies the request to
 // Qlik Cloud.
 app.get('/api/v1/*', async (req, res) => {
-  const reqHeaders = {}
-  if (req.headers['x-proxy-session-id']) {
-    reqHeaders.cookie = tokenStore[req.headers['x-proxy-session-id']]?.qlikSession
+  const session = req.session;
+  const reqHeaders = {};
+  
+  if (session.id && session.qlikSession) {
+    reqHeaders.cookie = decodeURIComponent(session.qlikSession);
   }
-
+  
   const r = await fetch(`https://${qlikConfig.tenantUri}${req.path}`, {
     headers: reqHeaders,
-  })
-  setCors(res)
-  res.status(r.status)
-  const buffer = Buffer.from(await r.arrayBuffer())
-  res.end(buffer, 'binary')
-})
+  });
+  setCors(res);
+  res.status(r.status);
+  const buffer = Buffer.from(await r.arrayBuffer());
+  res.end(buffer, 'binary');
+});
 
 // fetch resource from qlik using a redirect instead of proxy
 // This endpoint is necessary when your web application uses the capability API.
 app.get('/resources/*', async (req, res) => {
-  setCors(res)
+  setCors(res);
   res.redirect(`https://${qlikConfig.tenantUri}${req.path}`);
-  res.end()
-})
+  res.end();
+});
 
 // Issues the necessary pre-flight request to make sure the browser
 // knows how to work with the web application.
 app.options('/*', async (req, res) => {
-  setCors(res)
-  res.status(200).end()
-})
+  setCors(res);
+  res.status(200).end();
+});
 
 // Starts the server running this example.
 const server = app.listen(3000, () => {
-  console.log('Backend started')
+  console.log('Backend started');
 })
 
 // Websocket section for intercepting websocket requests from the
@@ -214,14 +257,25 @@ const wss = new WebSocketServer({ server })
 
 wss.on('connection', async function connection(ws, req) {
   let isOpened = false
-  const url = decodeURIComponent(req.url)
-  const sessionId = url.match('sessionId=([0-9a-z]+)')[1]
+  const cookieString = req.headers.cookie;
+  let qlikCookie = '';
+  if (cookieString) {
+    const cookieParsed = cookie.parse(cookieString);
+    const appCookie = cookieParsed['connect.sid'];
+    if (appCookie) {
+      const sidParsed = cookieParser.signedCookie(appCookie, sessionSecret);
+       await store.get(sidParsed, (err, session) => {
+        if (err) throw err;
+        qlikCookie = decodeURIComponent(session.qlikSession);
+      });
+    }
+  }
+
   const appId = req.url.match('/app/(.*)\\?')[1]
-  const cookie = tokenStore[sessionId]?.qlikSession
-  const csrfToken = cookie.match('_csrfToken=(.*);')[1]
-  const qlikWebSocket = new WebSocket(`wss://${qlikConfig.tenantUri}/app/${appId}/identity/preview?qlik-csrf-token=${csrfToken}`, {
+  const csrfToken = qlikCookie.match('_csrfToken=(.*);')[1]
+  const qlikWebSocket = new WebSocket(`wss://${qlikConfig.tenantUri}/app/${appId}?qlik-csrf-token=${csrfToken}`, {
     headers: {
-      cookie,
+      cookie: qlikCookie,
     },
   })
 
