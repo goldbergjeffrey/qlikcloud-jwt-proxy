@@ -60,6 +60,7 @@ const redis_db = process.env['redis_db'];
 const redis_port = Number(process.env['redis_port']);
 const redis_pwd = process.env['redis_pwd'];
 
+// Create the connection to Redis. This example uses Redis cloud free tier.
 const client = createClient({
     password: redis_pwd,
     socket: {
@@ -69,6 +70,7 @@ const client = createClient({
 });
 
 await client.connect();
+const store = new RedisStore({ client: client });
 
 // This example uses express.js to provide the proxy services between the
 // frontend web application and Qlik Cloud REST endpoints and websocket
@@ -76,8 +78,8 @@ await client.connect();
 const app = express();
 app.use(compression({ threshold: 0 }));
 
-const store = new RedisStore({ client: client });
-
+// Add the session management component to the proxy. Adds a 1st-party cookie
+// to manage a user's session.
 app.use(session({
   store: store,
   secret: sessionSecret,
@@ -91,12 +93,9 @@ app.use(session({
   }
 }));
 
+// send the webpage to the browser
 app.get('/', (req, res) => {
   res.sendFile(join(__dirname, 'index.html'))
-})
-
-app.get('/sw.js', (req, res) => {
-  res.sendFile(join(__dirname, 'sw.js'))
 })
 
 // This endpoint is necessary for this example to authenticate a user.
@@ -257,6 +256,10 @@ const wss = new WebSocketServer({ server })
 
 wss.on('connection', async function connection(ws, req) {
   let isOpened = false
+  // WebSockets do not have access to session information.
+  // To get the session you need to parse the 1st-party cookie.
+  // This will give you access to the Qlik Cloud cookie in order
+  // to proxy requests.
   const cookieString = req.headers.cookie;
   let qlikCookie = '';
   if (cookieString) {
@@ -306,6 +309,8 @@ function setCors(res) {
   res.set('Access-Control-Allow-Credentials', 'true')
 }
 
+// Create a JSON web token (JWT) to send to Qlik Cloud.
+// The token will be used to authorize user to Qlik Cloud.
 async function createToken(email, name, sub, config) {
   const signingOptions = {
     keyid: config.keyId,
@@ -329,6 +334,8 @@ async function createToken(email, name, sub, config) {
   return token;
 }
 
+// Use the JWT token to authorize the user to Qlik Cloud.
+// Return the cookie that will be used to proxy requests to Qlik Cloud.
 async function getQlikSessionCookie(tenantUri, token) {
   const resp = await fetch(`https://${tenantUri}/login/jwt-session`, {
     method: 'POST',
