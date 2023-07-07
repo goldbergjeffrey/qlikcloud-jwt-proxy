@@ -236,6 +236,12 @@ app.get('/resources/*', async (req, res) => {
   res.end();
 });
 
+app.get('/assets/*', async (req, res) => {
+  setCors(res);
+  res.redirect(`https://${qlikConfig.tenantUri}${req.path}`);
+  res.end();
+});
+
 // Issues the necessary pre-flight request to make sure the browser
 // knows how to work with the web application.
 app.options('/*', async (req, res) => {
